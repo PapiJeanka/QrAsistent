@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Guía de incidencias</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#F3F6F5;--surface:#fff;--ink:#12262C;--muted:#56696E;--line:#D3DCDA;--accent:#0B6E6E;--on:#fff;--ok:#1E7B4B;--warn:#B4570E;--bad:#B3261E}
+@media (prefers-color-scheme:dark){:root{--bg:#0F1A1D;--surface:#17262A;--ink:#E8F1F0;--muted:#93A8AC;--line:#2A3D41;--accent:#5CC4C0;--on:#0F1A1D;--ok:#5FD08F;--warn:#F0A15C;--bad:#FF8A80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",sans-serif;font-size:18px;line-height:1.45;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+main{max-width:34rem;margin:0 auto;padding:16px 16px 40px}
+h1{font-size:1.05rem;margin:0 0 12px}
+.eq,.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px}
+.eq{margin-bottom:12px}.eq b{display:block;font-size:1.15rem}.eq span,.muted{color:var(--muted);font-size:.95rem}
+.q{font-size:1.45rem;line-height:1.3;margin:0 0 20px;font-weight:700}
+.answers{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.btn{font:inherit;font-weight:700;font-size:1.15rem;padding:16px 12px;border-radius:12px;border:2px solid var(--accent);background:var(--accent);color:var(--on);cursor:pointer;width:100%}
+.btn.alt{background:transparent;color:var(--accent)}.btn.warn{background:var(--warn);border-color:var(--warn);color:#fff}
+.btn:disabled{opacity:.6}.mt{margin-top:12px}
+.link{background:none;border:0;color:var(--muted);font:inherit;font-size:.95rem;padding:12px 0 0;cursor:pointer;text-decoration:underline}
+label{display:block;margin:14px 0 4px;font-weight:700;font-size:.95rem}
+input,textarea{width:100%;font:inherit;padding:12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.res{border-left:6px solid var(--ok);padding-left:12px;margin-bottom:14px}.res.warn{border-color:var(--warn)}
+.res h2{margin:0 0 4px;font-size:1.3rem}.res p{margin:0;color:var(--muted)}
+.trail{margin:20px 0 0;padding:0;list-style:none;color:var(--muted);font-size:.92rem}.trail li{padding:4px 0;border-top:1px solid var(--line)}
+.err{color:var(--bad);margin:12px 0 0;font-weight:700}
+.notice{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:.92rem;margin-top:14px}
+.code{font-size:1.6rem;font-weight:700;letter-spacing:.08em}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.1/dist/umd/supabase.js"></script>
+<script>
+const SB_URL = 'https://mixwdhnvyxldxuueskuk.supabase.co';
+const SB_KEY = 'sb_publishable_jfvobIZXkJMklB1JcPF2aQ_hiEXHvv6';
+const db = supabase.createClient(SB_URL, SB_KEY);
+
+const RES = {
+  resuelto_reset:{t:'Resuelto: se reinició el sistema', d:'Queda registrado como reset.'},
+  resuelto_bloqueo:{t:'Resuelto: función desbloqueada', d:'Queda registrado como bloqueo.'},
+  resuelto_membrana:{t:'Resuelto: la membrana estaba apagada', d:'Queda registrado como membrana apagada.'},
+  resuelto_alimentacion:{t:'Resuelto: problema de alimentación', d:'Era el cable de poder o la toma.'},
+  resuelto_bateria:{t:'Resuelto: batería descargada', d:'Mantén el equipo conectado a la red.'},
+  sensor_danado:{t:'Sensor o cable dañado', d:'Funciona con otro sensor. Se avisa a biomédica para reposición.', warn:1},
+  escalado:{t:'No se pudo resolver', d:'Hace falta una visita técnica de biomédica.', warn:1}
+};
+
+const s = {view:'buscar', eq:null, af:'', tree:null, node:null, path:[], result:null, msg:'', busy:false, code:''};
+const $ = id => document.getElementById(id);
+const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const go = v => { s.view = v; draw(); };
+
+// Cada tipo de equipo usa su árbol (ver tabla arboles_decision)
+function treeKey(e){
+  if (e.tipo === 'monitor') return 'monitor';
+  const m = (e.modelo || '').toLowerCase();
+  if (m.includes('v3')) return 'cama_pardo_v3';
+  if (m.includes('v2')) return 'cama_pardo_v2';
+  return null;
+}
+
+async function buscar(code){
+  code = (code || '').trim();
+  if (!code) { s.msg = 'Escribe el activo fijo del equipo.'; return draw(); }
+  s.busy = true; s.msg = ''; draw();
+  const {data, error} = await db.from('equipos').select('*').eq('activo_fijo', code).maybeSingle();
+  s.busy = false;
+  if (error) { s.msg = 'No hay conexión con el servidor. Intenta de nuevo.'; return go('buscar'); }
+  if (!data) { s.af = code; s.eq = null; s.msg = 'No encontré ese activo fijo. Revísalo o reporta el problema directamente.'; return go('buscar'); }
+  s.eq = data; s.af = data.activo_fijo; s.path = [];
+  const k = treeKey(data);
+  if (k) {
+    const r = await db.from('arboles_decision').select('pasos').eq('tipo_equipo', k).eq('activo', true)
+      .order('version', {ascending:false}).limit(1).maybeSingle();
+    if (r.data) { s.tree = r.data.pasos; s.node = s.tree.start; s.result = null; return go('guia'); }
+  }
+  s.result = 'escalado'; go('reporte'); // sin árbol: se reporta directo
+}
+
+function answer(yes){
+  const n = s.tree.nodes[s.node];
+  s.path.push({q:n.q, a:yes ? 'Sí' : 'No'});
+  const next = yes ? n.si : n.no;
+  if (next.startsWith('R:')) { s.result = next.slice(2); go('resultado'); }
+  else { s.node = next; draw(); }
+}
+
+function back(){
+  const prev = s.path.slice(0, -1);
+  s.node = s.tree.start; s.path = []; s.result = null; s.view = 'guia';
+  prev.forEach(p => answer(p.a === 'Sí'));
+  draw();
+}
+
+async function comprimir(f){
+  try {
+    const b = await createImageBitmap(f);
+    const k = Math.min(1, 1280 / Math.max(b.width, b.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(b.width * k); c.height = Math.round(b.height * k);
+    c.getContext('2d').drawImage(b, 0, 0, c.width, c.height);
+    return await new Promise(r => c.toBlob(r, 'image/jpeg', .8));
+  } catch (e) { return f; }
+}
+
+async function guardarResuelto(){
+  s.busy = true; s.msg = ''; draw();
+  const id = crypto.randomUUID(), abierta = s.result === 'sensor_danado';
+  const first = s.path[0];
+  const {error} = await db.from('incidencias').insert({
+    id, equipo_id:s.eq.id, activo_fijo:s.eq.activo_fijo,
+    sintoma:(first ? first.q + ' ' + first.a : 'Consulta con la guía').slice(0, 300),
+    pasos_realizados:s.path, resultado:s.result,
+    estado: abierta ? 'abierta' : 'cerrada', resuelto_en: abierta ? null : new Date().toISOString()
+  });
+  s.busy = false;
+  if (error) { s.msg = 'No se pudo guardar. Revisa la conexión e intenta de nuevo.'; return draw(); }
+  s.code = id.slice(0, 8).toUpperCase(); go('listo');
+}
+
+async function enviarReporte(){
+  const af = $('af').value.trim(), file = $('foto').files[0];
+  const area = $('area').value.trim().slice(0, 100), sint = $('sint').value.trim().slice(0, 300);
+  if (!af) { s.msg = 'Escribe el activo fijo del equipo.'; return draw(true); }
+  if (!file) { s.msg = 'Adjunta una foto del equipo.'; return draw(true); }
+  s.busy = true; s.msg = ''; draw(true);
+  const id = crypto.randomUUID(), path = id + '/foto.jpg';
+  const blob = await comprimir(file);
+  const up = await db.storage.from('fotos-incidencias').upload(path, blob, {contentType: blob.type || 'image/jpeg'});
+  if (up.error) { s.busy = false; s.msg = 'No se pudo subir la foto. Intenta de nuevo.'; return draw(true); }
+  const ins = await db.from('incidencias').insert({
+    id, equipo_id: s.eq ? s.eq.id : null, activo_fijo: af, area_reporta: area || null,
+    sintoma: sint || 'No resuelto con la guía', pasos_realizados: s.path,
+    estado:'abierta', resultado:'escalado', foto_path: path
+  });
+  if (ins.error) { s.busy = false; s.msg = 'No se pudo guardar el reporte. Intenta de nuevo.'; return draw(true); }
+  await db.from('visitas_tecnicas').insert({incidencia_id: id});
+  s.busy = false; s.code = id.slice(0, 8).toUpperCase(); go('listo');
+}
+
+function eqCard(){
+  return s.eq ? '<div class="eq"><b>' + esc(s.eq.modelo) + '</b><span>' + esc(s.eq.activo_fijo) + ', ' + esc(s.eq.area || '') + ' ' + esc(s.eq.ubicacion || '') + '</span></div>' : '';
+}
+function trail(){
+  return s.path.length ? '<ul class="trail">' + s.path.map(p => '<li>' + esc(p.q) + ' <b>' + p.a + '</b></li>').join('') + '</ul>' : '';
+}
+
+function draw(keep){
+  const err = s.msg ? '<p class="err" role="alert">' + esc(s.msg) + '</p>' : '';
+  let h = '<h1>Guía de incidencias de equipos</h1>';
+  if (s.view === 'buscar') {
+    h += '<div class="card"><label for="afin">Activo fijo del equipo</label><input id="afin" value="' + esc(s.af) + '" placeholder="Ej. AF-000123" autocomplete="off">' + err +
+      '<button class="btn mt" data-a="buscar"' + (s.busy ? ' disabled' : '') + '>' + (s.busy ? 'Buscando…' : 'Buscar equipo') + '</button>' +
+      (s.eq === null && s.af && s.msg ? '<button class="btn alt mt" data-a="directo">Reportar sin guía</button>' : '') + '</div>';
+  } else if (s.view === 'guia') {
+    const n = s.tree.nodes[s.node];
+    h += eqCard() + '<div class="card"><p class="q">' + esc(n.q) + '</p><div class="answers"><button class="btn" data-a="si">Sí</button><button class="btn alt" data-a="no">No</button></div>' +
+      (s.path.length ? '<button class="link" data-a="back">Volver al paso anterior</button>' : '') + trail() + '</div>';
+  } else if (s.view === 'resultado') {
+    const r = RES[s.result], esc_ = s.result === 'escalado';
+    h += eqCard() + '<div class="card"><div class="res' + (r.warn ? ' warn' : '') + '"><h2>' + esc(r.t) + '</h2><p>' + esc(r.d) + '</p></div>' + err +
+      (esc_ ? '<button class="btn warn" data-a="reportar">Reportar y pedir visita técnica</button>'
+            : '<button class="btn"' + (s.busy ? ' disabled' : '') + ' data-a="guardar">' + (s.busy ? 'Guardando…' : (s.result === 'sensor_danado' ? 'Registrar y avisar a biomédica' : 'Registrar como resuelto')) + '</button>') +
+      '<button class="link" data-a="back">Volver al paso anterior</button>' + trail() + '</div>';
+  } else if (s.view === 'reporte') {
+    h += eqCard() + '<div class="card"><div class="res warn"><h2>Reporte para biomédica</h2><p>Completa los datos para pedir la visita técnica.</p></div>' +
+      '<label for="af">Activo fijo del equipo</label><input id="af" value="' + esc(s.af) + '" autocomplete="off">' +
+      '<label for="foto">Foto del equipo</label><input id="foto" type="file" accept="image/*">' +
+      '<label for="area">Área o servicio (opcional)</label><input id="area" maxlength="100">' +
+      '<label for="sint">¿Qué pasa? (opcional)</label><textarea id="sint" rows="3" maxlength="300"></textarea>' +
+      '<div class="notice">Fotografía solo el equipo. No incluyas pacientes ni rostros.</div>' + err +
+      '<button class="btn warn mt" data-a="enviar"' + (s.busy ? ' disabled' : '') + '>' + (s.busy ? 'Enviando…' : 'Enviar reporte') + '</button></div>';
+  } else {
+    h += '<div class="card"><div class="res"><h2>Listo, quedó registrado</h2><p>Código de referencia</p></div><p class="code">' + esc(s.code) + '</p><button class="btn alt mt" data-a="nuevo">Nueva incidencia</button></div>';
+  }
+  // conserva lo escrito en el formulario si se redibuja por un error
+  const keepVals = keep ? ['af','area','sint'].map(i => $(i) && $(i).value) : null;
+  app.innerHTML = h;
+  if (keepVals) ['af','area','sint'].forEach((i, k) => { if ($(i) && keepVals[k] != null) $(i).value = keepVals[k]; });
+}
+
+const app = $('app');
+app.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const a = b.dataset.a;
+  if (a === 'buscar') buscar($('afin').value);
+  else if (a === 'directo') { s.af = $('afin').value.trim(); s.eq = null; s.path = []; s.result = 'escalado'; s.msg = ''; go('reporte'); }
+  else if (a === 'si') answer(true);
+  else if (a === 'no') answer(false);
+  else if (a === 'back') back();
+  else if (a === 'guardar') guardarResuelto();
+  else if (a === 'reportar') { s.msg = ''; go('reporte'); }
+  else if (a === 'enviar') enviarReporte();
+  else if (a === 'nuevo') { location.href = location.pathname; }
+});
+
+const af0 = new URLSearchParams(location.search).get('af');
+if (af0) buscar(af0); else draw();
+</script>
+</body>
+</html>
